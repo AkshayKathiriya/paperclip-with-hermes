@@ -86,8 +86,6 @@ RUN mkdir -p /paperclip/.hermes/skills /paperclip/.hermes/sessions \
 COPY --from=source /app/scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-USER node
-
 ENV NODE_ENV=production \
   HOME=/paperclip \
   HOST=0.0.0.0 \
@@ -101,7 +99,8 @@ ENV NODE_ENV=production \
   OPENCODE_ALLOW_ALL_MODELS=true \
   HERMES_HOME=/paperclip/.hermes
 
-VOLUME ["/paperclip"]
+# Note: Do not use VOLUME here — Railway requires volumes to be
+# configured via its dashboard (Settings → Volumes), not in the Dockerfile.
 EXPOSE 3100
 
 ENTRYPOINT ["docker-entrypoint.sh"]
