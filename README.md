@@ -1,78 +1,69 @@
-# Paperclip + Hermes Agent (Docker)
+# YouTube AI Studio — Monorepo
 
-Custom Docker image extending [Paperclip AI](https://github.com/paperclipai/paperclip) v2026.427.0 with [Hermes Agent](https://github.com/NousResearch/hermes-agent) and the [hermes-paperclip-adapter](https://github.com/NousResearch/hermes-paperclip-adapter) pre-installed.
+Self-hosted AI video production platform combining [Paperclip AI](https://github.com/paperclipai/paperclip) with a YouTube video assembly worker.
 
-## What's included
+## Services
 
-- **Paperclip AI v2026.427.0** — self-hosted AI orchestration platform
-- **Hermes Agent v0.13.0 (2026.5.7)** — AI agent with 30+ tools, skills, persistent memory, MCP support
-- **hermes-paperclip-adapter v0.3.0** — adapter to run Hermes as a managed employee in Paperclip
+| Service | Directory | Port | Description |
+|---------|-----------|------|-------------|
+| `paperclip` | `paperclip/` | 3100 | AI orchestration UI + agent runtime |
+| `worker` | `worker/` | 5000 | Video assembly: TTS → subtitles → mp4 |
+| `db` | — | 5433 | Postgres 17 |
 
 ## Local development
 
 ```bash
 cp .env.example .env
-# Edit .env — set BETTER_AUTH_SECRET and at least one LLM API key
+# Fill in: BETTER_AUTH_SECRET, ANTHROPIC_API_KEY, PEXELS_API_KEY
 
 docker compose up --build
 ```
 
-Paperclip will be available at `http://localhost:3100`.
+- Paperclip UI → http://localhost:3100  
+- Worker health → http://localhost:5001/health
 
-## Deploy to Railway
+## Railway deployment
 
-### 1. Create a new Railway project
+Each service deploys as a separate Railway service pointing at this monorepo with its own root directory:
 
-Go to [railway.com/new](https://railway.com/new) and create a new project from this GitHub repo.
+| Railway service | Root directory | Port |
+|-----------------|---------------|------|
+| paperclip | `paperclip/` | 3100 |
+| worker | `worker/` | 5000 |
 
-### 2. Add a Postgres database
+### Environment variables (set per-service in Railway)
 
-In the Railway project dashboard, click **+ New** → **Database** → **PostgreSQL**. Railway auto-injects `DATABASE_URL` into your service.
-
-### 3. Set environment variables
-
-In the Paperclip service settings, add these variables:
-
+**paperclip service:**
 | Variable | Value |
 |----------|-------|
-| `BETTER_AUTH_SECRET` | A random string (use `openssl rand -hex 32`) |
+| `BETTER_AUTH_SECRET` | `openssl rand -hex 32` |
 | `PAPERCLIP_PUBLIC_URL` | `https://${{RAILWAY_PUBLIC_DOMAIN}}` |
-| `PAPERCLIP_DEPLOYMENT_MODE` | `authenticated` |
-| `SERVE_UI` | `true` |
-| `PORT` | `3100` |
-| `ANTHROPIC_API_KEY` | Your Anthropic API key |
+| `ANTHROPIC_API_KEY` | your key |
+| `VIDEO_WORKER_URL` | `http://worker.railway.internal:5000` |
 
-Add any other LLM API keys you want Hermes to use (`OPENAI_API_KEY`, `OPENROUTER_API_KEY`).
-
-### 4. Expose the service
-
-Under the service's **Settings** → **Networking**, generate a public domain. Railway assigns a URL like `your-app.up.railway.app`.
-
-### 5. Deploy
-
-Railway auto-deploys on push. For manual deploys, click **Deploy** in the dashboard.
-
-## Verifying Hermes inside the container
-
-```bash
-docker compose exec paperclip hermes --version
-```
+**worker service:**
+| Variable | Value |
+|----------|-------|
+| `ANTHROPIC_API_KEY` | your key |
+| `PEXELS_API_KEY` | your key |
+| `WHISPER_MODEL` | `base` |
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────┐
-│  Paperclip Server (:3100)           │
-│  ├─ UI (served at /)                │
-│  ├─ Adapter Registry                │
-│  │   ├─ claude-local                │
-│  │   ├─ codex-local                 │
-│  │   └─ hermes_local  ← adapter    │
-│  └─ Database (Postgres)             │
-├─────────────────────────────────────┤
-│  Hermes Agent (/opt/hermes)         │
-│  ├─ 30+ native tools                │
-│  ├─ 80+ skills                      │
-│  └─ Session persistence             │
-└─────────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│  Paperclip AI (paperclip/ — port 3100)              │
+│  ├─ CEO agent        orchestrates video pipeline     │
+│  ├─ Scriptwriter     writes narration via Claude     │
+│  ├─ Scene Director   breaks script into scenes       │
+│  └─ Production Mgr   SEO + triggers worker           │
+└──────────────────┬──────────────────────────────────┘
+                   │ POST /assemble-video
+┌──────────────────▼──────────────────────────────────┐
+│  YouTube Worker (worker/ — port 5000)               │
+│  ├─ Pexels fetch     stock video per scene          │
+│  ├─ Piper TTS        narration → WAV (900s timeout)  │
+│  ├─ Whisper          WAV → SRT subtitles            │
+│  └─ FFmpeg           assemble final .mp4            │
+└─────────────────────────────────────────────────────┘
 ```

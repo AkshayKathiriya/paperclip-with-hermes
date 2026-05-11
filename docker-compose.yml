@@ -11,12 +11,15 @@ services:
       timeout: 5s
       retries: 30
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
 
   paperclip:
-    build: .
+    build:
+      context: ./paperclip
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "${PORT:-3100}:3100"
     environment:
@@ -27,16 +30,42 @@ services:
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?Set BETTER_AUTH_SECRET}"
-      # LLM API keys — at least one required for Hermes Agent
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      # Worker is reachable by its service name inside docker compose network
+      VIDEO_WORKER_URL: "http://worker:5000"
     volumes:
       - paperclip-data:/paperclip
     depends_on:
       db:
         condition: service_healthy
+      worker:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./worker
+    ports:
+      - "5001:5000"
+    environment:
+      PORT: "5000"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      PEXELS_API_KEY: "${PEXELS_API_KEY:-}"
+      OUTPUT_DIR: "/data/videos"
+      PIPER_MODEL_DIR: "/data/piper-models"
+      WHISPER_MODEL: "${WHISPER_MODEL:-base}"
+      WORKER_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
+    volumes:
+      - worker-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
 volumes:
   pgdata:
   paperclip-data:
+  worker-data:
