@@ -1,0 +1,57 @@
+# Agent instructions (AGENTS.md)
+
+Each `.md` file in this directory is the persistent instruction bundle for one
+agent in Paperclip. They define what each agent does, the constraints it
+operates under, and how it hands work off to the next step in the pipeline.
+
+## Pipeline order
+
+```
+CEO → Researcher → Scriptwriter → Scene Director → Production Manager → [Worker] → Publisher
+```
+
+## Files
+
+| File | Agent role | Phase |
+|------|-----------|-------|
+| `CEO.md`               | Orchestrator — fans the request into the pipeline       | upstream |
+| `Researcher.md`        | Gathers facts, citations, real subject imagery URLs     | step 1   |
+| `Scriptwriter.md`      | 1000–1500 word documentary script with hook + 5 sections | step 2   |
+| `SceneDirector.md`     | Per-shot plan (25–45 shots, mixed sources)              | step 3   |
+| `ProductionManager.md` | SEO metadata + thumbnail brief + worker call            | step 4   |
+| `Publisher.md`         | YouTube Data API upload (deferred to a later phase)     | step 5   |
+
+## Applying changes to a running Paperclip instance
+
+Agent IDs are stable inside a given Paperclip installation. The mapping from
+filename → agent ID is below for the *local development* instance only —
+production / Railway instances will have different IDs.
+
+| File                  | Local agent ID                                |
+|-----------------------|-----------------------------------------------|
+| CEO.md                | `13a7652c-b913-412c-b13c-a1c57cb8ca89`         |
+| Researcher.md         | `86a9d088-0709-475f-a487-2154f9310453`         |
+| Scriptwriter.md       | `29273f17-8a38-4aae-9404-853c9fc62dd1`         |
+| SceneDirector.md      | `ed43f9b8-3db4-43bb-9611-e6feb7d6bfdc`         |
+| ProductionManager.md  | `3ea42506-bc31-49e3-8464-7136c2c16a0e`         |
+| Publisher.md          | `979f1e17-160c-4029-b34c-a9d34bb73d22`         |
+
+To re-apply these files into the running local Paperclip container after edits:
+
+```bash
+./agents/apply.sh
+```
+
+## Editing rules
+
+When you edit a `.md` file:
+
+1. Keep the standard sections: `Role`, `Working rules`, `Domain lenses`,
+   `Output bar`, `Collaboration`, `Safety`, `Done`.
+2. Each agent's instructions should be 3–6 KB. More than 8 KB usually means
+   you're putting code-level detail in the wrong place.
+3. Be specific about hand-offs ("link the `script` document to Production
+   Manager") — vague hand-offs cause stuck pipelines.
+4. The Production Manager file is special: it includes the exact request
+   body the worker expects, including the rule to forward `script` and
+   `visual_plan` as raw document body strings (do NOT re-parse).

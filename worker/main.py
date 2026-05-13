@@ -24,10 +24,12 @@ import threading
 import anthropic
 from flask import Flask, request, jsonify, send_from_directory
 
-from pipeline.fetch_pexels import fetch_pexels_videos
+from pipeline.compose_shots import compose_shots
+from pipeline.parse_visual_plan import normalize_visual_plan
 from pipeline.tts import generate_voiceover
 from pipeline.subtitles import generate_subtitles
 from pipeline.assemble import assemble_video
+from pipeline.thumbnail import generate_thumbnail
 
 # ── setup ──────────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -318,48 +320,97 @@ Return ONLY this JSON:
 def assemble_video_endpoint():
     """
     Direct entry point for Paperclip to kick off video assembly.
-    Accepts script + scenes, queues a background job, returns job_id immediately.
 
-    Expected body:
+    Expected body (new shape — Phase 2):
     {
       "script": "<narration text>",
-      "scenes": [{"num":"01","pexels_search_query":"...","duration_seconds":45}, ...]
+      "visual_plan": {
+        "total_duration_sec": 540,
+        "scenes": [
+          {
+            "num": "01",
+            "duration_sec": 60,
+            "shots": [
+              {"id": "01a", "duration_sec": 5, "source": "ai_image", "prompt": "..."},
+              {"id": "01b", "duration_sec": 6, "source": "wikimedia", "url": "..."},
+              {"id": "01c", "duration_sec": 4, "source": "pexels", "query": "..."}
+            ]
+          }
+        ]
+      },
+      "seo":             { "title": "...", "description": "...", "tags": [...] },
+      "thumbnail_brief": { "prompt": "...", "overlay_text": "...", "overlay_color": "#..." }
     }
 
-    OR Paperclip task-context style:
-    {
-      "task":    {"title": "..."},
-      "context": {"script": {...}, "scenes": {...}}
-    }
+    Legacy shape with top-level "scenes" (no shots) is auto-upgraded:
+    each scene becomes a single Pexels shot using its pexels_search_query.
     """
     data = request.get_json(force=True)
 
-    # support both flat and Paperclip task-context payloads
-    script_data = data.get("script") or data.get("context", {}).get("script") or \
-                  data.get("task", {}).get("script", {})
-    scenes_data = data.get("scenes") or data.get("context", {}).get("scenes") or \
-                  data.get("task", {}).get("scenes", {})
+    script = data.get("script") or ""
+    if not isinstance(script, str) or not script.strip():
+        return jsonify({"error": "Missing 'script' (string) in request body"}), 400
 
-    script = script_data if isinstance(script_data, str) \
-             else script_data.get("script", "") if isinstance(script_data, dict) else ""
-    scenes = scenes_data if isinstance(scenes_data, list) \
-             else scenes_data.get("scenes", []) if isinstance(scenes_data, dict) else []
+    # Coerce fields agents may serialize inconsistently (JSON string vs nested object)
+    legacy_scenes   = _coerce_json(data.get("scenes"))
+    seo               = _coerce_json(data.get("seo")) or {}
+    thumbnail_brief   = _coerce_json(data.get("thumbnail_brief"))
+    ai_image_quality  = (data.get("ai_image_quality") or "medium").strip().lower()
+    if ai_image_quality not in ("low", "medium", "high", "auto"):
+        ai_image_quality = "medium"
 
-    if not script:
-        return jsonify({"error": "Missing 'script' in request body"}), 400
-    if not scenes:
-        return jsonify({"error": "Missing 'scenes' in request body"}), 400
+    raw_plan = data.get("visual_plan")
+    visual_plan: dict | None = None
+    if raw_plan:
+        try:
+            visual_plan = normalize_visual_plan(raw_plan)
+        except ValueError as e:
+            log.error(f"visual_plan could not be normalized: {e}; "
+                      f"raw type={type(raw_plan).__name__}, "
+                      f"preview={str(raw_plan)[:300]}")
+            return jsonify({"error": f"visual_plan parse failed: {e}"}), 400
+
+    if not visual_plan:
+        if isinstance(legacy_scenes, list):
+            visual_plan = _upgrade_legacy_scenes(legacy_scenes)
+        else:
+            log.error(f"Bad payload — keys present: {list(data.keys())}; "
+                      f"types: visual_plan={type(data.get('visual_plan')).__name__}, "
+                      f"scenes={type(data.get('scenes')).__name__}")
+            return jsonify({"error": "Missing 'visual_plan' in request body"}), 400
+
+    if not visual_plan.get("scenes"):
+        return jsonify({"error": "visual_plan has no scenes"}), 400
+
+    # Validate that at least one shot has a non-empty source — refuse to start
+    # a job where 100% of shots will fall through to placeholders.
+    sourceful = sum(
+        1 for sc in visual_plan["scenes"] for sh in (sc.get("shots") or [])
+        if (sh.get("source") or "").strip()
+    )
+    total_shots = sum(len(sc.get("shots") or []) for sc in visual_plan["scenes"])
+    if total_shots == 0:
+        return jsonify({"error": "visual_plan has zero shots after parsing"}), 400
+    if sourceful == 0:
+        return jsonify({
+            "error": "All shots have empty 'source' — visual_plan likely sent in wrong format. "
+                     "Each shot needs source: pexels | wikimedia | ai_image plus query/url/prompt"
+        }), 400
+    log.info(f"visual_plan accepted: {len(visual_plan['scenes'])} scenes, "
+             f"{total_shots} shots ({sourceful} sourceful)")
 
     job_id = str(uuid.uuid4())[:8]
     JOBS[job_id] = {"status": "queued", "progress": 0, "result": None, "error": None}
 
     thread = threading.Thread(
         target=_run_assembly,
-        args=(job_id, script, scenes),
-        daemon=True
+        args=(job_id, script, visual_plan, seo, thumbnail_brief, ai_image_quality),
+        daemon=True,
     )
     thread.start()
-    log.info(f"[AssembleVideo] job {job_id} queued ({len(scenes)} scenes)")
+
+    n_shots = sum(len(s.get("shots") or []) for s in visual_plan.get("scenes") or [])
+    log.info(f"[AssembleVideo] job {job_id} queued ({n_shots} shots)")
 
     return jsonify({
         "status": "queued",
@@ -368,49 +419,121 @@ def assemble_video_endpoint():
     })
 
 
+def _coerce_json(val):
+    """
+    Accept either a dict/list or a JSON-encoded string. Agents are
+    inconsistent about whether they nest objects or stringify them in
+    the request body — be defensive.
+    """
+    if val is None:
+        return None
+    if isinstance(val, (dict, list)):
+        return val
+    if isinstance(val, str):
+        s = val.strip()
+        if not s:
+            return None
+        # Strip accidental markdown fences (`json ... `)
+        if s.startswith("```"):
+            s = s.strip("`")
+            if s.startswith("json"):
+                s = s[4:]
+            s = s.strip()
+        try:
+            return json.loads(s)
+        except json.JSONDecodeError:
+            log.warning(f"_coerce_json: could not parse string as JSON: {s[:120]}")
+            return val  # let caller decide — likely an invalid payload error
+    return val
+
+
+def _upgrade_legacy_scenes(scenes: list) -> dict:
+    """Convert old `scenes` payload (one Pexels query per scene) into the new visual_plan shape."""
+    out_scenes = []
+    total = 0
+    for i, s in enumerate(scenes):
+        dur = float(s.get("duration_seconds") or 45)
+        total += dur
+        out_scenes.append({
+            "num": s.get("num", f"{i+1:02d}"),
+            "duration_sec": dur,
+            "shots": [{
+                "id": f"{i+1:02d}a",
+                "duration_sec": dur,
+                "source": "pexels",
+                "query": s.get("pexels_search_query") or s.get("query") or "documentary footage",
+            }],
+        })
+    return {"total_duration_sec": total, "scenes": out_scenes}
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # ASYNC VIDEO ASSEMBLY PIPELINE
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _run_assembly(job_id: str, script: str, scenes: list):
+def _run_assembly(
+    job_id: str,
+    script: str,
+    visual_plan: dict,
+    seo: dict,
+    thumbnail_brief: dict | None,
+    ai_image_quality: str = "medium",
+):
     """
-    Background thread: Pexels → Piper TTS → Whisper → MoviePy+FFmpeg → .mp4
+    Background thread orchestrating the full assembly:
+      compose_shots → ElevenLabs TTS → Whisper subtitles → assemble → thumbnail.
     Updates JOBS[job_id] at each step so /status can report progress.
     """
     try:
         work_dir = os.path.join(OUTPUT_DIR, job_id)
         os.makedirs(work_dir, exist_ok=True)
 
-        _job(job_id, "fetching_videos", 10)
-        video_clips = fetch_pexels_videos(scenes, work_dir)
+        _job(job_id, "composing_shots", 10)
+        shot_results = compose_shots(visual_plan, work_dir, ai_image_quality=ai_image_quality)
+        shot_clips   = [r["clip_path"] for r in shot_results]
 
-        _job(job_id, "generating_voice", 35)
-        audio_path = generate_voiceover(script, work_dir, speed=0.92)
+        _job(job_id, "generating_voice", 40)
+        audio_path = generate_voiceover(script, work_dir)
 
-        _job(job_id, "generating_subtitles", 55)
+        _job(job_id, "generating_subtitles", 60)
         srt_path = generate_subtitles(audio_path, work_dir)
 
         _job(job_id, "assembling_video", 75)
         out_file = f"video_{job_id}.mp4"
         out_path = os.path.join(work_dir, out_file)
-
         assemble_video(
-            video_clips=video_clips,
+            shot_clips=shot_clips,
             audio_path=audio_path,
             srt_path=srt_path,
             output_path=out_path,
-            resolution="1920x1080",
             fps=30,
-            subtitle_style="bottom-center",
         )
 
-        base_url     = os.getenv("WORKER_PUBLIC_URL", "")
-        download_url = f"{base_url}/videos/{job_id}/{out_file}"
+        thumbnail_url = None
+        if thumbnail_brief:
+            _job(job_id, "generating_thumbnail", 90)
+            try:
+                thumb_path = generate_thumbnail(thumbnail_brief, work_dir)
+                thumbnail_url = _public_url(job_id, os.path.basename(thumb_path))
+            except Exception as e:
+                log.warning(f"[Assembly] thumbnail failed (non-fatal): {e}")
+
+        download_url = _public_url(job_id, out_file)
+        subtitle_url = _public_url(job_id, "subs.srt") if srt_path else None
 
         JOBS[job_id] = {
             "status": "done", "progress": 100,
-            "result": {"download_url": download_url, "job_id": job_id, "filename": out_file},
-            "error": None
+            "result": {
+                "video_url":     download_url,
+                "thumbnail_url": thumbnail_url,
+                "subtitle_url":  subtitle_url,
+                "duration_sec":  visual_plan.get("total_duration_sec"),
+                "job_id":        job_id,
+                "filename":      out_file,
+                "seo":           seo,
+                "shot_summary":  _shot_summary(shot_results),
+            },
+            "error": None,
         }
         _save_job(job_id)
         log.info(f"[Assembly] ✅ {job_id} → {download_url}")
@@ -419,6 +542,18 @@ def _run_assembly(job_id: str, script: str, scenes: list):
         log.exception(f"[Assembly] ❌ {job_id}: {e}")
         JOBS[job_id] = {"status": "error", "progress": 0, "result": None, "error": str(e)}
         _save_job(job_id)
+
+
+def _public_url(job_id: str, filename: str) -> str:
+    base = os.getenv("WORKER_PUBLIC_URL", "")
+    return f"{base}/videos/{job_id}/{filename}"
+
+
+def _shot_summary(results: list[dict]) -> dict:
+    summary = {"pexels": 0, "wikimedia": 0, "ai_image": 0, "placeholder": 0}
+    for r in results:
+        summary[r["source"]] = summary.get(r["source"], 0) + 1
+    return summary
 
 
 def _job(job_id: str, status: str, progress: int) -> None:
@@ -451,6 +586,27 @@ def serve_video(filename):
 def health():
     active = len([j for j in JOBS.values() if j["status"] not in ("done","error")])
     return jsonify({"status": "ok", "active_jobs": active, "total_jobs": len(JOBS)})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DEBUG — verify external API integrations from inside the worker container
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/debug/pexels-test", methods=["GET"])
+def debug_pexels_test():
+    """
+    Verify Pexels API connectivity from inside the worker.
+    Example:
+      GET /debug/pexels-test?query=hyderabad+city+skyline
+    Returns the API key presence flag, result count, and top 5 hits.
+    """
+    from pipeline.fetch_pexels import debug_search
+
+    query = request.args.get("query", "").strip()
+    if not query:
+        return jsonify({"error": "missing ?query=... param"}), 400
+
+    return jsonify(debug_search(query))
 
 
 # ══════════════════════════════════════════════════════════════════════════════

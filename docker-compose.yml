@@ -21,7 +21,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "${PORT:-3100}:3100"
+      - "3100:3100"
     environment:
       DATABASE_URL: "postgres://paperclip:${POSTGRES_PASSWORD:-paperclip}@db:5432/paperclip"
       PORT: "3100"
@@ -51,9 +51,12 @@ services:
     environment:
       PORT: "5000"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       PEXELS_API_KEY: "${PEXELS_API_KEY:-}"
+      ELEVENLABS_API_KEY: "${ELEVENLABS_API_KEY:-}"
+      ELEVENLABS_VOICE_ID: "${ELEVENLABS_VOICE_ID:-}"
+      ELEVENLABS_MODEL: "${ELEVENLABS_MODEL:-eleven_turbo_v2_5}"
       OUTPUT_DIR: "/data/videos"
-      PIPER_MODEL_DIR: "/data/piper-models"
       WHISPER_MODEL: "${WHISPER_MODEL:-base}"
       WORKER_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
     volumes:
