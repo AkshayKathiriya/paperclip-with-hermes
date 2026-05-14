@@ -34,6 +34,9 @@ services:
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      # OpenCode's Google provider uses @ai-sdk/google which reads this exact
+      # variable name (not GEMINI_API_KEY despite what `opencode providers` says).
+      GOOGLE_GENERATIVE_AI_API_KEY: "${GEMINI_API_KEY:-}"
       # Worker is reachable by its service name inside docker compose network
       VIDEO_WORKER_URL: "http://worker:5000"
     volumes:

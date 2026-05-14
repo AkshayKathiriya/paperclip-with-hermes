@@ -100,5 +100,36 @@ affected agent until the type is correct.
 | `claude_local` | (none — `model` defaults)  | `model`, `extraArgs`, `chrome`, `dangerouslySkipPermissions` |
 | `opencode_local` | `model` (e.g. `google/gemini-2.5-flash` or `openrouter/deepseek/deepseek-v3.2`) | `command` (defaults to `opencode`) |
 
-Provider auth is read from process env (`OPENROUTER_API_KEY`,
-`GEMINI_API_KEY`, etc.) — they are passed in via `docker-compose.yml`.
+Provider auth is read from process env. **Variable names matter exactly:**
+
+| Provider | Env var OpenCode actually reads |
+|----------|--------------------------------|
+| Anthropic | `ANTHROPIC_API_KEY` |
+| OpenAI | `OPENAI_API_KEY` |
+| Google Gemini | **`GOOGLE_GENERATIVE_AI_API_KEY`** (NOT `GEMINI_API_KEY`!) |
+| OpenRouter | `OPENROUTER_API_KEY` |
+
+Note: `opencode providers list` *shows* "Google [GEMINI_API_KEY]" in its UI,
+but the underlying `@ai-sdk/google` package only reads
+`GOOGLE_GENERATIVE_AI_API_KEY`. If you only set `GEMINI_API_KEY`, OpenCode
+will spawn, run for ~2.5 seconds, then exit silently with empty stdout —
+which Paperclip records as `succeeded` with `exit_code=0`, triggering the
+`issue.continuation_recovery` watchdog into a polling loop every 30s. The
+agent appears to "run" but produces no work.
+
+Both `GEMINI_API_KEY` and `GOOGLE_GENERATIVE_AI_API_KEY` are set in our
+docker-compose; the Gemini MCP server reads the former, OpenCode reads the
+latter.
+
+### Known issue: `opencode_local` adapter swallows model output
+
+Even with the correct env vars set, the Paperclip `opencode_local` adapter
+does not currently surface the assistant's response back to the issue
+thread. The session completes (we've verified Gemini receives the request
+and OpenCode logs `exiting loop`), but the `result_json.stdout` field on
+the heartbeat run is always empty.
+
+**Current workaround:** keep all agents on `claude_local` until this is
+resolved. The architectural choice (per-agent models) is preserved — when
+the adapter is fixed, only the `adapter_type` and `model` fields in the DB
+need to change.
