@@ -55,3 +55,50 @@ When you edit a `.md` file:
 4. The Production Manager file is special: it includes the exact request
    body the worker expects, including the rule to forward `script` and
    `visual_plan` as raw document body strings (do NOT re-parse).
+
+## Adapter configuration gotchas
+
+These are real failure modes we've already hit. Read before changing
+`adapter_type` or `adapter_config` in the database.
+
+### Adapter type names use **underscores**, not hyphens
+
+Paperclip registers adapters under `snake_case` IDs:
+
+| ✅ correct       | ❌ wrong          |
+|------------------|-------------------|
+| `claude_local`   | `claude-local`    |
+| `opencode_local` | `opencode-local`  |
+| `codex_local`    | `codex-local`     |
+| `gemini_local`   | `gemini-local`    |
+
+If you set `adapter_type = 'opencode-local'` (hyphen), Paperclip silently
+falls back to the **generic process adapter**, which then fails every
+heartbeat with `"Process adapter missing command"`. The `stranded_issue_recovery`
+watchdog then creates a new "Recover stalled" sub-issue every ~16 seconds —
+we've seen this cascade reach **177 issues in 94 seconds** before being paused.
+
+The directory names under `packages/adapters/` use hyphens (`opencode-local/`)
+which is what causes the confusion. The directory name and the registered
+adapter ID are NOT the same.
+
+### Verify adapter type when changing it
+
+After an `UPDATE agents SET adapter_type = ...`, sanity-check by running:
+
+```sql
+SELECT name, adapter_type FROM agents;
+```
+
+If any value contains a hyphen, fix it immediately — do not unpause the
+affected agent until the type is correct.
+
+### Required adapter_config fields per adapter
+
+| adapter_type   | required keys              | optional keys                                |
+|----------------|----------------------------|----------------------------------------------|
+| `claude_local` | (none — `model` defaults)  | `model`, `extraArgs`, `chrome`, `dangerouslySkipPermissions` |
+| `opencode_local` | `model` (e.g. `google/gemini-2.5-flash` or `openrouter/deepseek/deepseek-v3.2`) | `command` (defaults to `opencode`) |
+
+Provider auth is read from process env (`OPENROUTER_API_KEY`,
+`GEMINI_API_KEY`, etc.) — they are passed in via `docker-compose.yml`.
