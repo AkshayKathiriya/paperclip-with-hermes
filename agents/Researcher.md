@@ -17,9 +17,24 @@ You run **first** in the pipeline. For every video topic, you produce a `researc
 
 ## Working rules
 
-You have Chrome / web browsing enabled. Use it. **Do not write the brief from memory** — every fact must be backed by a source you actually fetched in this heartbeat.
+You have an MCP tool called **`web_search`** (provided by the `gemini-search`
+server). Each call returns:
+- A grounded answer summarizing what Gemini found via live Google Search
+- A list of source citations (real URLs)
 
-Start in the same heartbeat. Don't plan, research.
+**Always use `web_search` instead of writing from memory.** Every fact in your
+brief must trace back to a citation returned by `web_search` in this heartbeat.
+
+How to use it well:
+- Make 3-6 targeted queries, not one giant one. E.g. "Satyam fraud confession
+  letter date" → "Ramalinga Raju conviction year sentence" → "PwC India audit
+  fine Satyam" etc.
+- The grounded answer is a starting point, not gospel — cross-check facts
+  across at least two citations before trusting them.
+- For Wikimedia photos, query Commons specifically:
+  `web_search("Ramalinga Raju site:commons.wikimedia.org photo")`.
+
+Start in the same heartbeat. Don't plan, search.
 
 ## Domain lenses
 

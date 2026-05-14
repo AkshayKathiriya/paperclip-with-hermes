@@ -83,6 +83,10 @@ RUN cd /app && pnpm add -w hermes-paperclip-adapter@0.3.0
 RUN mkdir -p /paperclip/.hermes/skills /paperclip/.hermes/sessions \
   && chown -R node:node /paperclip/.hermes
 
+# MCP servers (Phase 3 — Researcher uses gemini-search MCP)
+COPY mcp-servers/ /opt/mcp-servers/
+RUN chmod +x /opt/mcp-servers/gemini-search/server.py
+
 COPY --from=source /app/scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
