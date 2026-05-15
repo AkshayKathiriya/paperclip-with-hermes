@@ -26,6 +26,20 @@ DEFAULT_MODEL   = "gpt-image-1"
 DEFAULT_SIZE    = "1536x1024"   # 3:2 landscape, we crop to 16:9 later
 DEFAULT_QUALITY = "medium"
 
+# Wrapped around every Scene Director prompt to enforce a consistent
+# documentary look across all shots of a video. We add it on top of the
+# raw prompt so each video has visual cohesion (one style, not a mood
+# board of 30 different aesthetics).
+STYLE_GUIDE = (
+    "Documentary photograph, photojournalistic style, "
+    "cinematic lighting, shallow depth of field, "
+    "natural color grading, professional editorial quality, 8K detail. "
+    "Composition: horizontal 16:9 landscape orientation, NOT portrait. "
+    "Do NOT include any text, captions, watermarks, logos, brand marks, "
+    "or readable writing in the image. Do NOT include subtitles or "
+    "on-screen graphics. Photoreal, not illustrated."
+)
+
 
 class AIImageError(RuntimeError):
     """Raised for any image-generation failure that should fail a shot loudly."""
@@ -38,20 +52,40 @@ def _api_key() -> str:
     return key
 
 
+def _wrap_prompt(raw_prompt: str, scene_context: str | None) -> str:
+    """
+    Combine Scene Director's raw prompt with our STYLE_GUIDE and an
+    optional scene-context line. Order matters: shot specifics first
+    (so gpt-image-1 prioritises them), style guide second, anti-text
+    guard last.
+    """
+    parts = [raw_prompt.strip()]
+    if scene_context:
+        parts.append(f"Documentary context: {scene_context.strip()[:300]}")
+    parts.append(STYLE_GUIDE)
+    return " ".join(parts)
+
+
 def generate_image(
     prompt: str,
     out_path: str,
     size: str = DEFAULT_SIZE,
     quality: str = DEFAULT_QUALITY,
     model: str = DEFAULT_MODEL,
+    scene_context: str | None = None,
 ) -> str:
     """
     Generate one image from a prompt and write it to out_path (PNG).
+    The raw `prompt` is wrapped with STYLE_GUIDE for visual consistency
+    + a "no text/logos/watermarks" guard.
+    `scene_context` (optional): narration excerpt or scene title, gives
+    gpt-image-1 semantic context for the documentary topic.
     Returns the local path.
     """
     if not prompt or len(prompt) < 10:
         raise AIImageError(f"Prompt too short / empty: '{prompt[:40]}'")
 
+    full_prompt = _wrap_prompt(prompt, scene_context)
     api_key = _api_key()
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -59,7 +93,7 @@ def generate_image(
     }
     body = {
         "model": model,
-        "prompt": prompt,
+        "prompt": full_prompt,
         "n": 1,
         "size": size,
         "quality": quality,

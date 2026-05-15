@@ -488,15 +488,27 @@ def _run_assembly(
         work_dir = os.path.join(OUTPUT_DIR, job_id)
         os.makedirs(work_dir, exist_ok=True)
 
-        _job(job_id, "composing_shots", 10)
-        shot_results = compose_shots(visual_plan, work_dir, ai_image_quality=ai_image_quality)
-        shot_clips   = [r["clip_path"] for r in shot_results]
-
-        _job(job_id, "generating_voice", 40)
+        # ── 1. Narration first (so we know the target visual duration) ──
+        _job(job_id, "generating_voice", 10)
         audio_path = generate_voiceover(script, work_dir)
+        narration_duration = _probe_audio_duration(audio_path)
+        log.info(f"[Assembly] narration duration: {narration_duration:.1f}s")
 
-        _job(job_id, "generating_subtitles", 60)
+        # ── 2. Subtitles BEFORE compose_shots so we have per-word timings
+        #       that compose_shots uses to align each shot to its
+        #       narration_excerpt timestamp.
+        _job(job_id, "generating_subtitles", 25)
         srt_path = generate_subtitles(audio_path, work_dir)
+
+        # ── 3. Compose shots, aligned to actual narration timing ──
+        _job(job_id, "composing_shots", 40)
+        shot_results = compose_shots(
+            visual_plan, work_dir,
+            ai_image_quality=ai_image_quality,
+            target_duration_sec=narration_duration,
+            srt_path=srt_path,
+        )
+        shot_clips = [r["clip_path"] for r in shot_results]
 
         _job(job_id, "assembling_video", 75)
         out_file = f"video_{job_id}.mp4"
@@ -527,7 +539,7 @@ def _run_assembly(
                 "video_url":     download_url,
                 "thumbnail_url": thumbnail_url,
                 "subtitle_url":  subtitle_url,
-                "duration_sec":  visual_plan.get("total_duration_sec"),
+                "duration_sec":  round(narration_duration, 1) or visual_plan.get("total_duration_sec"),
                 "job_id":        job_id,
                 "filename":      out_file,
                 "seo":           seo,
@@ -547,6 +559,23 @@ def _run_assembly(
 def _public_url(job_id: str, filename: str) -> str:
     base = os.getenv("WORKER_PUBLIC_URL", "")
     return f"{base}/videos/{job_id}/{filename}"
+
+
+def _probe_audio_duration(audio_path: str) -> float:
+    """Return audio duration in seconds via ffprobe, or 0.0 on failure."""
+    import json as _json
+    import subprocess as _sp
+    try:
+        r = _sp.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json",
+             "-show_format", audio_path],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode != 0:
+            return 0.0
+        return float(_json.loads(r.stdout)["format"]["duration"])
+    except Exception:
+        return 0.0
 
 
 def _shot_summary(results: list[dict]) -> dict:

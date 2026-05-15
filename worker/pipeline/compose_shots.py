@@ -52,12 +52,40 @@ class ComposeError(RuntimeError):
     """Raised when a shot can't be produced even after fallback attempts."""
 
 
-def compose_shots(visual_plan: dict, work_dir: str, ai_image_quality: str = "medium") -> list[dict]:
+def compose_shots(
+    visual_plan: dict,
+    work_dir: str,
+    ai_image_quality: str = "medium",
+    target_duration_sec: float | None = None,
+    srt_path: str | None = None,
+) -> list[dict]:
     """
     Realize every shot in visual_plan as an MP4 clip on disk.
     Returns ordered metadata list (one entry per shot, in plan order).
+
     ai_image_quality: low | medium | high  (passed through to gpt-image-1)
+
+    target_duration_sec: if provided, ALL shot durations are scaled
+        proportionally so their total equals this value. This is how we
+        keep visuals in sync with the (already-generated) narration —
+        otherwise a 30-shot plan summing to 150s plays under a 600s
+        narration, leaving 7+ minutes of silent end-frame.
     """
+    # Priority 1: per-shot narration alignment if we have an SRT. This
+    # makes visuals land on the exact moment their excerpt is being spoken.
+    aligned = False
+    if srt_path:
+        from pipeline.narration_sync import align_shots_to_narration
+        try:
+            align_shots_to_narration(visual_plan, srt_path)
+            aligned = True
+        except Exception as e:
+            log.warning(f"narration sync failed, falling back to proportional: {e}")
+
+    # Priority 2 (fallback): proportional scaling to target duration.
+    # Useful when SRT is missing or all excerpts fail to match.
+    if not aligned and target_duration_sec:
+        _normalize_durations(visual_plan, target_duration_sec)
     clips_dir = os.path.join(work_dir, "clips")
     images_dir = os.path.join(work_dir, "images")
     os.makedirs(clips_dir, exist_ok=True)
@@ -141,6 +169,67 @@ def compose_shots(visual_plan: dict, work_dir: str, ai_image_quality: str = "med
 
 # ── source renderers ──────────────────────────────────────────────────────────
 
+def _normalize_durations(visual_plan: dict, target_total_sec: float) -> None:
+    """
+    Scale every shot's `duration_sec` so the sum equals target_total_sec.
+
+    Strategy: simple proportional scale of all shot durations. If the plan
+    summed to 150s and narration is 600s, every shot's duration is multiplied
+    by 4.0 (so a 5s shot becomes 20s). Each shot is also clamped to a
+    [MIN_SHOT_SEC, MAX_SHOT_SEC] band so we don't get either 0.3s flashes or
+    60s glacial holds.
+    """
+    MIN_SHOT_SEC = 3.0
+    MAX_SHOT_SEC = 18.0
+
+    scenes = visual_plan.get("scenes") or []
+    shots: list[dict] = [sh for sc in scenes for sh in (sc.get("shots") or [])]
+    if not shots:
+        return
+
+    total = sum(float(sh.get("duration_sec") or 5.0) for sh in shots)
+    if total <= 0:
+        # Plan lacks any durations — split target_total evenly.
+        per = max(MIN_SHOT_SEC, min(MAX_SHOT_SEC, target_total_sec / len(shots)))
+        for sh in shots:
+            sh["duration_sec"] = per
+        log.info(
+            f"_normalize_durations: plan had no durations; "
+            f"split {target_total_sec:.1f}s evenly → {per:.1f}s per shot"
+        )
+        return
+
+    scale = target_total_sec / total
+    log.info(
+        f"_normalize_durations: target={target_total_sec:.1f}s plan_total={total:.1f}s "
+        f"scale={scale:.2f}x → applied to {len(shots)} shots"
+    )
+
+    # First pass: scale.
+    for sh in shots:
+        d = float(sh.get("duration_sec") or 5.0) * scale
+        sh["duration_sec"] = d
+
+    # Clamp each shot, then redistribute the leftover/deficit so total stays right.
+    clamped = [max(MIN_SHOT_SEC, min(MAX_SHOT_SEC, sh["duration_sec"])) for sh in shots]
+    drift = target_total_sec - sum(clamped)
+    if abs(drift) > 0.5:
+        # Spread drift across shots that aren't already at the clamp boundary.
+        adjustable = [
+            i for i, d in enumerate(clamped)
+            if MIN_SHOT_SEC < d < MAX_SHOT_SEC
+        ] or list(range(len(clamped)))
+        per_shot_adj = drift / len(adjustable)
+        for i in adjustable:
+            clamped[i] = max(MIN_SHOT_SEC, min(MAX_SHOT_SEC, clamped[i] + per_shot_adj))
+
+    for sh, d in zip(shots, clamped):
+        sh["duration_sec"] = round(d, 3)
+
+    final_total = sum(sh["duration_sec"] for sh in shots)
+    log.info(f"_normalize_durations: final_total={final_total:.1f}s (target {target_total_sec:.1f}s)")
+
+
 def _render_pexels_shot(shot: dict, clip_path: str, duration: float, used_ids: set[int]) -> None:
     query = (shot.get("query") or shot.get("pexels_query") or "").strip()
     if not query:
@@ -173,7 +262,8 @@ def _render_ai_shot(shot: dict, clip_path: str, duration: float, images_dir: str
     if not prompt:
         raise ComposeError("ai_image shot has no prompt")
     image_path = os.path.join(images_dir, f"{os.path.basename(clip_path).replace('.mp4', '')}.png")
-    generate_image(prompt, image_path, quality=quality)
+    scene_context = (shot.get("narration_excerpt") or shot.get("title") or "").strip() or None
+    generate_image(prompt, image_path, quality=quality, scene_context=scene_context)
     still_to_clip(image_path, clip_path, duration, variant_idx=idx)
 
 
