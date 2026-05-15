@@ -121,6 +121,38 @@ Both `GEMINI_API_KEY` and `GOOGLE_GENERATIVE_AI_API_KEY` are set in our
 docker-compose; the Gemini MCP server reads the former, OpenCode reads the
 latter.
 
+## Deferred — Phase 4 backlog
+
+### Per-scene mood modifier for AI-image style
+
+Today every AI-generated shot uses one fixed `STYLE_GUIDE` (see
+`worker/pipeline/generate_ai_images.py`). That guarantees brand cohesion
+but means an "envelope on a desk" shot and a "Hyderabad cityscape at
+golden hour" shot get the same lighting prescription.
+
+When ready, layer a per-scene **mood modifier** between the raw prompt
+and the global style guide:
+
+| Mood tag      | Hint inserted into prompt                                   |
+|---------------|-------------------------------------------------------------|
+| `warm_rise`   | warm golden lighting, optimistic atmosphere, bright accents |
+| `tense`       | high contrast, harsh shadows, cold blue undertones          |
+| `grim_fall`   | desaturated, overcast, muted browns and greys               |
+| `reckoning`   | sterile institutional lighting, blue-grey, gravitas         |
+| `neutral`     | balanced, no mood bias                                      |
+
+Implementation cost (~30 min):
+- Add `mood` field to Scene Director's per-scene output (AGENTS.md)
+- Update `parse_visual_plan.py` to capture `mood`
+- Update `_wrap_prompt()` in `generate_ai_images.py` to insert the
+  matching modifier line above STYLE_GUIDE
+
+Why deferred: we want to ship working videos first with one consistent
+style. Adding per-scene mood is a polish step that only pays off once
+the rest of the pipeline is reliable.
+
+---
+
 ### Known issue: `opencode_local` adapter swallows model output
 
 Even with the correct env vars set, the Paperclip `opencode_local` adapter

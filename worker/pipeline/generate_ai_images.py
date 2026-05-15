@@ -27,17 +27,27 @@ DEFAULT_SIZE    = "1536x1024"   # 3:2 landscape, we crop to 16:9 later
 DEFAULT_QUALITY = "medium"
 
 # Wrapped around every Scene Director prompt to enforce a consistent
-# documentary look across all shots of a video. We add it on top of the
-# raw prompt so each video has visual cohesion (one style, not a mood
-# board of 30 different aesthetics).
+# look across all shots in all videos. The style is tuned for fraud /
+# scandal / business-crime documentaries — premium cinematic feel
+# (Netflix true-crime / Fincher) rather than generic news photography.
+#
+# TODO (Phase 4 — see agents/README.md): layer a per-scene `mood`
+# modifier on top of this base so the ARC across a video varies
+# (warm gold rise → cold harsh fall → grey-blue reckoning). Scene
+# Director would tag each scene with one of {warm, tense, grim,
+# hopeful, neutral}, and _wrap_prompt would insert the right mood
+# line before this guide. Skipping for v1 — visual cohesion first,
+# arc-varying second.
 STYLE_GUIDE = (
-    "Documentary photograph, photojournalistic style, "
-    "cinematic lighting, shallow depth of field, "
-    "natural color grading, professional editorial quality, 8K detail. "
+    "Premium cinematic documentary still photograph. Netflix true-crime / "
+    "David Fincher aesthetic: deep shadows, controlled chiaroscuro lighting, "
+    "muted earth-tone palette with selective accent colors. "
+    "Shallow depth of field, 35mm lens compression, deliberate composition, "
+    "professional editorial quality, 8K detail. Photoreal, never illustrated. "
     "Composition: horizontal 16:9 landscape orientation, NOT portrait. "
-    "Do NOT include any text, captions, watermarks, logos, brand marks, "
-    "or readable writing in the image. Do NOT include subtitles or "
-    "on-screen graphics. Photoreal, not illustrated."
+    "NEVER include any text, captions, watermarks, logos, brand marks, "
+    "newspaper headlines, on-screen graphics, subtitles, or readable writing "
+    "of any kind in the image."
 )
 
 
